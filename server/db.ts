@@ -1,16 +1,45 @@
-import Database from "better-sqlite3";
+import initSqlJs, { Database as SqlJsDatabase } from "sql.js";
+import fs from "fs";
+import path from "path";
 
 const dbFile = "./fiaxi.db";
-const db = new Database(dbFile);
+let db: SqlJsDatabase | null = null;
+let sqlJs: any = null;
 
-// Enable foreign keys
-db.pragma("foreign_keys = ON");
+async function initSqlModule() {
+  if (!sqlJs) {
+    sqlJs = await initSqlJs();
+  }
+  return sqlJs;
+}
 
-// Wrapper functions to match the async interface
+async function loadDatabase() {
+  const sql = await initSqlModule();
+
+  if (fs.existsSync(dbFile)) {
+    const buffer = fs.readFileSync(dbFile);
+    db = new sql.Database(buffer);
+  } else {
+    db = new sql.Database();
+  }
+}
+
+function saveDatabase() {
+  if (db) {
+    const data = db.export();
+    const buffer = Buffer.from(data);
+    fs.writeFileSync(dbFile, buffer);
+  }
+}
+
 export async function dbRun(sql: string, params: any[] = []): Promise<void> {
+  if (!db) await loadDatabase();
   try {
-    const stmt = db.prepare(sql);
-    stmt.run(...params);
+    const stmt = db!.prepare(sql);
+    stmt.bind(params);
+    stmt.step();
+    stmt.free();
+    saveDatabase();
   } catch (error) {
     console.error("DB run error:", error, "SQL:", sql);
     throw error;
@@ -18,9 +47,13 @@ export async function dbRun(sql: string, params: any[] = []): Promise<void> {
 }
 
 export async function dbGet(sql: string, params: any[] = []): Promise<any> {
+  if (!db) await loadDatabase();
   try {
-    const stmt = db.prepare(sql);
-    return stmt.get(...params);
+    const stmt = db!.prepare(sql);
+    stmt.bind(params);
+    const result = stmt.step() ? stmt.getAsObject() : null;
+    stmt.free();
+    return result;
   } catch (error) {
     console.error("DB get error:", error, "SQL:", sql);
     throw error;
@@ -28,9 +61,16 @@ export async function dbGet(sql: string, params: any[] = []): Promise<any> {
 }
 
 export async function dbAll(sql: string, params: any[] = []): Promise<any[]> {
+  if (!db) await loadDatabase();
   try {
-    const stmt = db.prepare(sql);
-    return stmt.all(...params);
+    const stmt = db!.prepare(sql);
+    stmt.bind(params);
+    const results: any[] = [];
+    while (stmt.step()) {
+      results.push(stmt.getAsObject());
+    }
+    stmt.free();
+    return results;
   } catch (error) {
     console.error("DB all error:", error, "SQL:", sql);
     throw error;
@@ -39,8 +79,10 @@ export async function dbAll(sql: string, params: any[] = []): Promise<any[]> {
 
 export async function initializeDatabase() {
   try {
-    // Users table
-    db.exec(`
+    if (!db) await loadDatabase();
+
+    // Create tables
+    const createTablesSQL = `
       CREATE TABLE IF NOT EXISTS users (
         id TEXT PRIMARY KEY,
         email TEXT UNIQUE NOT NULL,
@@ -53,11 +95,8 @@ export async function initializeDatabase() {
         rating REAL DEFAULT 5.0,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
+      );
 
-    // Locations/Routes table
-    db.exec(`
       CREATE TABLE IF NOT EXISTS locations (
         id TEXT PRIMARY KEY,
         user_id TEXT NOT NULL,
@@ -67,11 +106,8 @@ export async function initializeDatabase() {
         location_type TEXT NOT NULL CHECK(location_type IN ('home', 'work', 'pickup', 'dropoff', 'current')),
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-      )
-    `);
+      );
 
-    // Routes table
-    db.exec(`
       CREATE TABLE IF NOT EXISTS routes (
         id TEXT PRIMARY KEY,
         user_id TEXT NOT NULL,
@@ -84,11 +120,8 @@ export async function initializeDatabase() {
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
         FOREIGN KEY (start_location_id) REFERENCES locations(id),
         FOREIGN KEY (end_location_id) REFERENCES locations(id)
-      )
-    `);
+      );
 
-    // Tracking sessions table
-    db.exec(`
       CREATE TABLE IF NOT EXISTS tracking_sessions (
         id TEXT PRIMARY KEY,
         user_id TEXT NOT NULL,
@@ -97,11 +130,8 @@ export async function initializeDatabase() {
         status TEXT NOT NULL CHECK(status IN ('active', 'paused', 'completed')),
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-      )
-    `);
+      );
 
-    // Location history table (for tracking points)
-    db.exec(`
       CREATE TABLE IF NOT EXISTS location_history (
         id TEXT PRIMARY KEY,
         session_id TEXT NOT NULL,
@@ -112,18 +142,31 @@ export async function initializeDatabase() {
         heading REAL,
         timestamp DATETIME NOT NULL,
         FOREIGN KEY (session_id) REFERENCES tracking_sessions(id) ON DELETE CASCADE
-      )
-    `);
+      );
 
-    // Create indexes for better performance
-    db.exec(`
       CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
       CREATE INDEX IF NOT EXISTS idx_locations_user ON locations(user_id);
       CREATE INDEX IF NOT EXISTS idx_routes_user ON routes(user_id);
       CREATE INDEX IF NOT EXISTS idx_sessions_user ON tracking_sessions(user_id);
       CREATE INDEX IF NOT EXISTS idx_history_session ON location_history(session_id);
-    `);
+    `;
 
+    // Split and execute each statement
+    const statements = createTablesSQL.split(";").filter((s) => s.trim());
+    for (const stmt of statements) {
+      if (stmt.trim()) {
+        try {
+          db!.run(stmt.trim());
+        } catch (e: any) {
+          // Ignore "already exists" errors
+          if (!e.message?.includes("already exists")) {
+            throw e;
+          }
+        }
+      }
+    }
+
+    saveDatabase();
     console.log("✅ Database initialized successfully at ./fiaxi.db");
   } catch (error) {
     console.error("❌ Database initialization failed:", error);

@@ -35,15 +35,14 @@ let dbInitialized = false;
 export async function createServer() {
   const app = express();
 
-  // Initialize database on first request (lazy initialization)
-  app.use(async (req, res, next) => {
-    if (!dbInitialized) {
-      const { initializeDatabase } = await import("./db");
-      await initializeDatabase();
-      dbInitialized = true;
-    }
-    next();
-  });
+  // Initialize database immediately
+  try {
+    const { initializeDatabase } = await import("./db");
+    await initializeDatabase();
+    dbInitialized = true;
+  } catch (error) {
+    console.error("Failed to initialize database:", error);
+  }
 
   // Middleware
   app.use(cors());

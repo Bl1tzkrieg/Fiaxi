@@ -5,6 +5,7 @@ import path from "path";
 const dbFile = "./fiaxi.db";
 let db: SqlJsDatabase | null = null;
 let sqlJs: any = null;
+let initPromise: Promise<void> | null = null;
 
 async function initSqlModule() {
   if (!sqlJs) {
@@ -32,8 +33,17 @@ function saveDatabase() {
   }
 }
 
+async function ensureDb() {
+  if (!db) {
+    if (!initPromise) {
+      initPromise = loadDatabase();
+    }
+    await initPromise;
+  }
+}
+
 export async function dbRun(sql: string, params: any[] = []): Promise<void> {
-  if (!db) await loadDatabase();
+  await ensureDb();
   try {
     const stmt = db!.prepare(sql);
     stmt.bind(params);
@@ -47,7 +57,7 @@ export async function dbRun(sql: string, params: any[] = []): Promise<void> {
 }
 
 export async function dbGet(sql: string, params: any[] = []): Promise<any> {
-  if (!db) await loadDatabase();
+  await ensureDb();
   try {
     const stmt = db!.prepare(sql);
     stmt.bind(params);
@@ -61,7 +71,7 @@ export async function dbGet(sql: string, params: any[] = []): Promise<any> {
 }
 
 export async function dbAll(sql: string, params: any[] = []): Promise<any[]> {
-  if (!db) await loadDatabase();
+  await ensureDb();
   try {
     const stmt = db!.prepare(sql);
     stmt.bind(params);
